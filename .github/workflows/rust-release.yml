@@ -10,8 +10,7 @@
 
 name: rust-release
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 env:
   CODEX_ZSH_RELEASE_TAG: codex-zsh-v0.1.0

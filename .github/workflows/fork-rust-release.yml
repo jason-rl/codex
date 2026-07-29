@@ -1,0 +1,367 @@
+# Fork release workflow for codex-rs.
+#
+# Every push to main replaces the release for the workspace version with an
+# unsigned Apple Silicon build optimized for Apple M4 and macOS 26.3.
+
+name: fork-rust-release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
+      MACOSX_DEPLOYMENT_TARGET: "26.3"
+      RUSTFLAGS: "-C target-cpu=apple-m4"
+      SCCACHE_CLIENT_SIDE: "1"
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_LOG: warn
+      TARGET: ${{ matrix.target }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: aarch64-apple-darwin
+            bundle: primary
+            artifact_name: aarch64-apple-darwin
+            binaries: "codex codex-code-mode-host"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Print runner specs (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          total_ram="$(sysctl -n hw.memsize | awk '{printf "%.1f GiB\n", $1 / 1024 / 1024 / 1024}')"
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo "OS: $(sw_vers -productName) $(sw_vers -productVersion)"
+          echo "Hardware model: $(sysctl -n hw.model)"
+          echo "CPU architecture: $(uname -m)"
+          echo "Logical CPUs: $(sysctl -n hw.logicalcpu)"
+          echo "Physical CPUs: $(sysctl -n hw.physicalcpu)"
+          echo "Total RAM: ${total_ram}"
+          echo "Disk usage:"
+          df -h .
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: codex-rs -> target
+          cache-targets: false
+
+      - name: Configure sccache error log
+        shell: bash
+        run: echo "SCCACHE_ERROR_LOG=${RUNNER_TEMP}/sccache-error.log" >>"$GITHUB_ENV"
+
+      - name: Set up sccache
+        id: sccache
+        continue-on-error: true
+        uses: Mozilla-Actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Enable sccache
+        if: steps.sccache.outcome == 'success'
+        shell: bash
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >>"$GITHUB_ENV"
+
+      - name: Verify compiler target CPU support
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version --verbose
+          rustc --print target-cpus --target "$TARGET" | tee "${RUNNER_TEMP}/target-cpus"
+          awk '{ print $1 }' "${RUNNER_TEMP}/target-cpus" | grep -Fx apple-m4
+
+      - name: Configure rusty_v8 artifact overrides
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Cargo build
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          memory_log="${RUNNER_TEMP}/cargo-build-memory.log"
+          build_args=()
+          for binary in ${{ matrix.binaries }}; do
+            build_args+=(--bin "$binary")
+          done
+
+          monitor_memory() {
+            while true; do
+              {
+                date -u
+                memory_pressure
+                vm_stat
+                ps -Ao pid=,ppid=,rss=,%mem=,command= | sort -k3 -nr | head -n 20
+              } >>"$memory_log" 2>&1 || true
+              sleep 60
+            done
+          }
+
+          monitor_memory &
+          monitor_pid=$!
+          stop_memory_monitor() {
+            kill "$monitor_pid" 2>/dev/null || true
+            wait "$monitor_pid" 2>/dev/null || true
+          }
+          trap stop_memory_monitor EXIT
+
+          set +e
+          cargo build --target "$target" --release --timings "${build_args[@]}"
+          build_status=$?
+          set -e
+
+          stop_memory_monitor
+          trap - EXIT
+          if [[ "${RUSTC_WRAPPER:-}" == "sccache" ]]; then
+            sccache --show-stats || true
+          fi
+          exit "$build_status"
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: rust-release-build-diagnostics-${{ matrix.target }}-${{ matrix.bundle }}
+          path: |
+            ${{ runner.temp }}/cargo-build-memory.log
+            ${{ runner.temp }}/sccache-error.log
+          if-no-files-found: warn
+
+      - parallel:
+          - name: Upload Cargo timings
+            uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+            with:
+              name: cargo-timings-rust-release-${{ matrix.target }}-${{ matrix.bundle }}
+              path: codex-rs/target/**/cargo-timings/cargo-timing.html
+              if-no-files-found: warn
+
+          - name: Build symbols archive and strip binaries
+            shell: bash
+            run: |
+              bash "${GITHUB_WORKSPACE}/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
+                --target "${{ matrix.target }}" \
+                --artifact-name "${{ matrix.artifact_name }}" \
+                --release-dir "target/${{ matrix.target }}/release" \
+                --archive-dir "symbols-dist/${{ matrix.artifact_name }}" \
+                --binaries "${{ matrix.binaries }}"
+
+      - name: Preserve release binaries and reclaim Cargo build storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="target/${TARGET}/release"
+          staged_release_dir="${RUNNER_TEMP}/codex-release-${TARGET}"
+
+          rm -rf "$staged_release_dir"
+          mkdir -p "$staged_release_dir"
+          for binary in ${{ matrix.binaries }}; do
+            mv "${release_dir}/${binary}" "${staged_release_dir}/${binary}"
+          done
+
+          echo "Disk usage before Cargo target cleanup:"
+          du -sh "target/${TARGET}" || true
+          df -h .
+          rm -rf "target/${TARGET}"
+          rm -rf "${RUNNER_TEMP}/codex-symbols-${{ matrix.artifact_name }}"
+          rm -rf "${RUNNER_TEMP}/rusty_v8"
+          rm -rf "$CARGO_HOME/registry/src"
+          echo "Disk usage after Cargo target cleanup:"
+          df -h .
+
+      - parallel:
+          - name: Upload symbols archive
+            uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+            with:
+              name: ${{ matrix.artifact_name }}-symbols
+              path: codex-rs/symbols-dist/${{ matrix.artifact_name }}/*
+              if-no-files-found: error
+
+          - name: Upload stripped release binaries
+            uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+            with:
+              name: ${{ matrix.artifact_name }}-release-inputs
+              path: ${{ runner.temp }}/codex-release-${{ matrix.target }}/*
+              if-no-files-found: error
+              compression-level: 0
+
+  package:
+    name: Package - macos-26 - aarch64-apple-darwin
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      TARGET: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aarch64-apple-darwin-release-inputs
+          path: codex-rs/target/aarch64-apple-darwin/release
+
+      - name: Build archives and macOS installers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_dir="target/${TARGET}/release"
+          dist_dir="${PWD}/dist"
+          package_dir="${RUNNER_TEMP}/codex-package-${TARGET}"
+          pkg_root="${RUNNER_TEMP}/codex-pkg-root"
+          dmg_root="${RUNNER_TEMP}/codex-dmg-root"
+
+          for binary in codex codex-code-mode-host; do
+            chmod 0755 "${release_dir}/${binary}"
+          done
+
+          rm -rf "$dist_dir" "$package_dir" "$pkg_root" "$dmg_root"
+          mkdir -p \
+            "$dist_dir" \
+            "$pkg_root/usr/local/libexec" \
+            "$pkg_root/usr/local/bin" \
+            "$dmg_root"
+
+          bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
+            --target "$TARGET" \
+            --bundle primary \
+            --entrypoint-dir "$release_dir" \
+            --archive-dir "$dist_dir"
+
+          for binary in codex codex-code-mode-host; do
+            asset="${binary}-${TARGET}"
+            ln "${release_dir}/${binary}" "${dist_dir}/${asset}"
+            tar -C "$dist_dir" -czf "${dist_dir}/${asset}.tar.gz" "$asset"
+            zstd -T0 -19 "${dist_dir}/${asset}" -o "${dist_dir}/${asset}.zst"
+            rm "${dist_dir:?}/${asset}"
+          done
+
+          (
+            cd "$dist_dir"
+            shasum -a 256 "codex-package-${TARGET}.tar.gz" |
+              awk '{ print $1 "  " $2 }'
+          ) >"${dist_dir}/codex-package_SHA256SUMS"
+
+          ditto "$package_dir" "$pkg_root/usr/local/libexec/codex"
+          rm -rf "$release_dir" "$package_dir"
+          ln -s ../libexec/codex/bin/codex "$pkg_root/usr/local/bin/codex"
+
+          version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)"
+          pkg_path="${dist_dir}/codex-${TARGET}.pkg"
+          pkgbuild \
+            --root "$pkg_root" \
+            --identifier com.github.jason-rl.codex \
+            --version "$version" \
+            --install-location / \
+            "$pkg_path"
+          rm -rf "$pkg_root"
+
+          pkg_size_kib="$(du -sk "$pkg_path" | awk '{ print $1 }')"
+          dmg_size_kib="$((pkg_size_kib + 65536))"
+          dmg_path="${dist_dir}/codex-${TARGET}.dmg"
+          ln "$pkg_path" "${dmg_root}/Install Codex.pkg"
+          hdiutil create \
+            -size "${dmg_size_kib}k" \
+            -fs HFS+ \
+            -volname "Codex" \
+            -srcfolder "$dmg_root" \
+            -format UDZO \
+            -ov \
+            "$dmg_path"
+          rm -rf "$dmg_root"
+          hdiutil verify "${dist_dir}/codex-${TARGET}.dmg"
+
+          test -f "$dist_dir/codex-package-aarch64-apple-darwin.tar.gz"
+          test -f "$dist_dir/codex-package-aarch64-apple-darwin.tar.zst"
+          test -f "$dist_dir/codex-package_SHA256SUMS"
+          test -f "$dist_dir/codex-aarch64-apple-darwin.pkg"
+          test -f "$dist_dir/codex-aarch64-apple-darwin.dmg"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: aarch64-apple-darwin
+          path: codex-rs/dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish fork release
+    needs: package
+    runs-on: ubuntu-slim
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aarch64-apple-darwin
+          path: dist
+
+      - name: Add repository release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp codex-rs/core/config.schema.json dist/config-schema.json
+          cp scripts/install/install.sh dist/install.sh
+          cp scripts/install/install.ps1 dist/install.ps1
+
+      - name: Replace release for workspace version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^version = "([^"]+)"/\1/p' codex-rs/Cargo.toml | head -1)"
+          tag="rust-v${version}"
+
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          gh api \
+            --method DELETE \
+            "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" \
+            2>/dev/null || true
+
+          gh release create "$tag" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "$version" \
+            --notes "Automated Apple Silicon fork build from ${GITHUB_SHA}." \
+            --latest
