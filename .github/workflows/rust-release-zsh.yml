@@ -1,9 +1,7 @@
 name: rust-release-zsh
 
 on:
-  push:
-    tags:
-      - "codex-zsh-v*.*.*"
+  workflow_dispatch:
 
 env:
   ZSH_COMMIT: 77045ef899e53b9598bebc5a41db93a548a40ca6

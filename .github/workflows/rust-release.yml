@@ -11,8 +11,7 @@
 name: rust-release
 on:
   push:
-    tags:
-      - "rust-v*.*.*"
+    branches: [main]
 
 env:
   CODEX_ZSH_RELEASE_TAG: codex-zsh-v0.1.0
