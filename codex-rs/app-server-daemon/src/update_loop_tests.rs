@@ -38,6 +38,10 @@ fn changed_updater_forces_refresh_even_when_version_may_match() {
 
 #[tokio::test]
 async fn installer_fetch_uses_exact_url_and_preserves_bytes() {
+    assert_eq!(
+        INSTALL_URL,
+        "https://github.com/jason-rl/codex/releases/latest/download/install.sh"
+    );
     let script = b"#!/bin/sh\nprintf 'update bytes'\n".to_vec();
     let http = FakeInstallerHttp::new(InstallerResponse::Success(script.clone()));
 
