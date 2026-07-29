@@ -15,7 +15,9 @@ def workflow_triggers(path: Path) -> set[str]:
     try:
         on_line = next(index for index, line in enumerate(lines) if line == "on:")
     except StopIteration as error:
-        raise AssertionError(f"{path.name} does not contain a top-level on mapping") from error
+        raise AssertionError(
+            f"{path.name} does not contain a top-level on mapping"
+        ) from error
 
     triggers = set()
     for line in lines[on_line + 1 :]:
@@ -94,17 +96,17 @@ class ForkWorkflowPolicyTest(unittest.TestCase):
             "Mozilla-Actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba",
             "continue-on-error: true",
             "if: steps.sccache.outcome == 'success'",
-            'RUSTC_WRAPPER=sccache',
+            "RUSTC_WRAPPER=sccache",
             'SCCACHE_GHA_ENABLED: "true"',
             'SCCACHE_CLIENT_SIDE: "1"',
             'SCCACHE_IDLE_TIMEOUT: "0"',
-            'SCCACHE_ERROR_LOG=${RUNNER_TEMP}/sccache-error.log',
+            "SCCACHE_ERROR_LOG=${RUNNER_TEMP}/sccache-error.log",
             "SCCACHE_LOG: warn",
             'memory_log="${RUNNER_TEMP}/cargo-build-memory.log"',
-            'sccache --show-stats',
+            "sccache --show-stats",
             "name: rust-release-build-diagnostics-${{ matrix.target }}-${{ matrix.bundle }}",
-            '${{ runner.temp }}/cargo-build-memory.log',
-            '${{ runner.temp }}/sccache-error.log',
+            "${{ runner.temp }}/cargo-build-memory.log",
+            "${{ runner.temp }}/sccache-error.log",
             "archive-release-symbols-and-strip-binaries.sh",
             "cargo-timings-rust-release-${{ matrix.target }}-${{ matrix.bundle }}",
             'release_dir="${RUNNER_TEMP}/codex-release-${TARGET}"',
@@ -128,22 +130,24 @@ class ForkWorkflowPolicyTest(unittest.TestCase):
             '-srcfolder "$dmg_root"',
             "-format UDZO",
             'hdiutil verify "${dist_dir}/codex-${TARGET}.dmg"',
-            'rustc --print target-cpus',
+            "rustc --print target-cpus",
             '--target "$target"',
-            'build-codex-package-archive.sh',
-            'codex-package-aarch64-apple-darwin.tar.gz',
-            'codex-package-aarch64-apple-darwin.tar.zst',
-            'codex-package_SHA256SUMS',
-            'com.github.jason-rl.codex',
-            'Install Codex.pkg',
+            "build-codex-package-archive.sh",
+            "codex-package-aarch64-apple-darwin.tar.gz",
+            "codex-package-aarch64-apple-darwin.tar.zst",
+            "codex-package_SHA256SUMS",
+            "com.github.jason-rl.codex",
+            "Install Codex.pkg",
             "needs: package",
-            'config-schema.json',
-            'install.sh',
-            'install.ps1',
+            "config-schema.json",
+            "install.sh",
+            "install.ps1",
             "runs-on: ubuntu-slim",
         ]
         missing = [
-            fragment for fragment in required_fragments if fragment not in release_workflow
+            fragment
+            for fragment in required_fragments
+            if fragment not in release_workflow
         ]
         self.assertEqual([], missing)
         self.assertEqual(2, release_workflow.count("      - parallel:\n"))
@@ -165,7 +169,7 @@ class ForkWorkflowPolicyTest(unittest.TestCase):
             "-format UDRW",
             'hdiutil attach "$writable_dmg"',
             "hdiutil convert",
-            '${GITHUB_WORKSPACE}/.github/workflows:${PATH}',
+            "${GITHUB_WORKSPACE}/.github/workflows:${PATH}",
         ]
         present = [
             fragment

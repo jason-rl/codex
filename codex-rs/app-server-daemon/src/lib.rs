@@ -702,9 +702,9 @@ impl Daemon {
 
         let managed_codex_path = self.managed_codex_bin.display();
         let install_command = if cfg!(windows) {
-            "irm https://chatgpt.com/codex/install.ps1 | iex"
+            "irm https://github.com/jason-rl/codex/releases/latest/download/install.ps1 | iex"
         } else {
-            "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+            "curl -fsSL https://github.com/jason-rl/codex/releases/latest/download/install.sh | sh"
         };
         Err(anyhow!(
             "managed standalone Codex install not found at {managed_codex_path}\n\n\
