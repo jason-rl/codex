@@ -10,8 +10,7 @@
 
 name: rust-release
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 env:
   CODEX_REPO_ROOT: ${{ github.workspace }}
