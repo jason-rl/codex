@@ -1176,6 +1176,40 @@ output_token_limit = 12000
 }
 
 #[tokio::test]
+async fn remote_installed_plugin_preserves_configured_enablement() {
+    let codex_home = TempDir::new().unwrap();
+    write_cached_plugin(codex_home.path(), REMOTE_GLOBAL_MARKETPLACE_NAME, "linear");
+    write_file(
+        &codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+plugins = true
+
+[plugins."linear@openai-curated-remote"]
+enabled = false
+"#,
+    );
+
+    let config = load_config(codex_home.path(), codex_home.path()).await;
+    let manager = test_plugins_manager_with_options(
+        codex_home.path().to_path_buf(),
+        Some(Product::Codex),
+        Some(AuthMode::Chatgpt),
+    );
+    manager.write_remote_installed_plugins_cache(vec![remote_installed_linear_plugin()]);
+
+    let outcome = manager.plugins_for_config(&config).await;
+
+    assert_eq!(
+        outcome
+            .plugins()
+            .iter()
+            .map(|plugin| (plugin.config_name.as_str(), plugin.enabled))
+            .collect::<Vec<_>>(),
+        vec![("linear@openai-curated-remote", false)]
+    );
+}
+
+#[tokio::test]
 async fn remote_installed_plugin_preserves_configured_mcp_server_policy() {
     let codex_home = TempDir::new().unwrap();
     let plugin_root = codex_home
@@ -1199,7 +1233,7 @@ async fn remote_installed_plugin_preserves_configured_mcp_server_policy() {
 plugins = true
 
 [plugins."linear@openai-curated-remote"]
-enabled = false
+enabled = true
 
 [plugins."linear@openai-curated-remote".mcp_servers.linear]
 enabled = false
@@ -1218,7 +1252,9 @@ approval_mode = "approve"
         Some(Product::Codex),
         Some(AuthMode::Chatgpt),
     );
-    manager.write_remote_installed_plugins_cache(vec![remote_installed_linear_plugin()]);
+    let mut remote_plugin = remote_installed_linear_plugin();
+    remote_plugin.enabled = false;
+    manager.write_remote_installed_plugins_cache(vec![remote_plugin]);
 
     let outcome = manager.plugins_for_config(&config).await;
     let plugin = outcome

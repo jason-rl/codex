@@ -320,6 +320,7 @@ fn merge_remote_plugin_config(
     mut remote_plugin_config: PluginConfig,
 ) {
     if let Some(configured_plugin) = configured_plugins.get(&plugin_key) {
+        remote_plugin_config.enabled = configured_plugin.enabled;
         remote_plugin_config
             .mcp_servers
             .clone_from(&configured_plugin.mcp_servers);
